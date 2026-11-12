@@ -20,6 +20,10 @@ from .delegates.formatter._format_helpers import formatter
 from .errors import (  # noqa: F401
     DefinitionSyntaxError,
     DimensionalityError,
+    IntervalDomainError,
+    IntervalError,
+    IntervalOverflowError,
+    IntervalUndefinedError,
     LogarithmicUnitCalculusError,
     OffsetUnitCalculusError,
     PintError,
@@ -28,6 +32,7 @@ from .errors import (  # noqa: F401
     UnitStrippedWarning,
 )
 from .formatting import register_unit_format
+from .interval import QuantityInterval
 from .registry import ApplicationRegistry, LazyRegistry, UnitRegistry
 from .util import logger, pi_theorem  # noqa: F401
 
@@ -132,6 +137,7 @@ def get_application_registry():
 __all__ = (
     "Measurement",
     "Quantity",
+    "QuantityInterval",
     "Unit",
     "UnitRegistry",
     "Group",
@@ -139,6 +145,10 @@ __all__ = (
     "DefinitionSyntaxError",
     "LogarithmicUnitCalculusError",
     "DimensionalityError",
+    "IntervalError",
+    "IntervalDomainError",
+    "IntervalUndefinedError",
+    "IntervalOverflowError",
     "OffsetUnitCalculusError",
     "RedefinitionError",
     "UndefinedUnitError",

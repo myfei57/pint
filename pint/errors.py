@@ -299,6 +299,35 @@ class UnitStrippedWarning(UserWarning, PintError):
         return self.__class__, (self.msg,)
 
 
+class IntervalError(PintError):
+    """Base class for all errors raised by interval arithmetic."""
+
+
+class IntervalDomainError(IntervalError, ValueError):
+    """Raised when an interval is built or combined with unsupported inputs.
+
+    Typical cases are non-finite or non-scalar magnitudes, offset/logarithmic
+    units, incompatible dimensions, mixed registries and an active
+    (potentially non-linear) context.
+    """
+
+
+class IntervalUndefinedError(IntervalError):
+    """Raised when an interval operation has no defined real result.
+
+    This is raised when dividing by an interval that contains zero, or when
+    raising an interval containing zero to a negative integer power.
+    """
+
+
+class IntervalOverflowError(IntervalError, OverflowError):
+    """Raised when an interval result cannot be represented by finite float64.
+
+    The operation is never silently clamped to the largest finite float and
+    no interval with reversed bounds is returned.
+    """
+
+
 class UnexpectedScaleInContainer(Exception):
     pass
 
