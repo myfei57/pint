@@ -31,7 +31,7 @@ import itertools
 import pathlib
 import re
 from collections import defaultdict
-from collections.abc import Callable, Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from decimal import Decimal
 from fractions import Fraction
 from math import isnan
@@ -54,7 +54,7 @@ from typing import Self, TypeAlias
 
 import platformdirs
 
-from ... import pint_eval
+from ... import pint_ad, pint_eval
 from ..._typing import (
     Handler,
     Magnitude,
@@ -66,6 +66,7 @@ from ..._typing import (
 from ...compat import coerce_scalar, is_duck_array
 from ...errors import (
     DimensionalityError,
+    ExpressionEvaluationError,
     OffsetUnitCalculusError,
     RedefinitionError,
     UndefinedUnitError,
@@ -73,6 +74,7 @@ from ...errors import (
 from ...pint_eval import _BINARY_OPERATOR_MAP, build_eval_tree
 from ...util import (
     ParserHelper,
+    SharedRegistryObject,
     _clean_exponent,
     _is_dim,
     create_class_with_registry,
@@ -1522,6 +1524,223 @@ class GenericPlainRegistry[QuantityT: PlainQuantity, UnitT: PlainUnit](
         if not isinstance(result, self.Quantity):
             return self.Quantity(result)
         return result
+
+    @staticmethod
+    def _normalize_diff_bindings(
+        bindings: Mapping[str, QuantityArgument]
+        | Iterable[tuple[str, QuantityArgument]],
+    ) -> dict[str, QuantityArgument]:
+        """Normalize symbol bindings, rejecting duplicate definitions.
+
+        A mapping cannot carry duplicate keys; an iterable of ``(name, value)``
+        pairs can, so repeated names are reported explicitly before any
+        evaluation takes place.
+        """
+        if isinstance(bindings, Mapping):
+            return dict(bindings)
+
+        normalized: dict[str, QuantityArgument] = {}
+        for pair in bindings:
+            try:
+                name, value = pair
+            except (TypeError, ValueError) as exc:
+                raise ExpressionEvaluationError(
+                    "Bindings must be a mapping or an iterable of "
+                    "(name, quantity) pairs"
+                ) from exc
+            if not isinstance(name, str) or not name:
+                raise ExpressionEvaluationError(
+                    "Binding names must be non-empty strings"
+                )
+            if name in normalized:
+                raise ExpressionEvaluationError(
+                    f"Duplicate definition of symbol '{name}'"
+                )
+            normalized[name] = value
+        return normalized
+
+    def _resolve_diff_leaf(
+        self,
+        token: TokenInfo,
+        bindings: Mapping[str, QuantityArgument],
+        case_sensitive: bool | None,
+        expression: str,
+    ) -> QuantityT:
+        """Resolve a leaf token to a primal Quantity, rejecting unknown symbols."""
+        if token.type == NUMBER:
+            magnitude = ParserHelper.eval_token(token, non_int_type=self.non_int_type)
+            return self.Quantity(magnitude)
+
+        name = token.string
+        if name in bindings:
+            return self.Quantity(bindings[name])
+        if name == "dimensionless":
+            return self.Quantity(1)
+
+        try:
+            return self._eval_token(token, case_sensitive=case_sensitive)
+        except UndefinedUnitError as exc:
+            raise ExpressionEvaluationError(
+                f"Unknown symbol '{name}'",
+                expression,
+                token.start[0],
+                token.start[1] + 1,
+                name,
+            ) from exc
+
+    def _assert_diff_units_multiplicative(
+        self,
+        quantity: PlainQuantity,
+        token: TokenInfo | None,
+        expression: str,
+    ) -> None:
+        """Reject absolute (offset) and logarithmic units, which need more
+        than multiplicative calculus and are out of scope of the first version.
+        """
+        if quantity._is_logarithmic:
+            unit_name = next(iter(quantity._units))
+            raise ExpressionEvaluationError(
+                f"Logarithmic unit '{unit_name}' is not supported by automatic "
+                "differentiation; use a multiplicative unit",
+                expression,
+                token.start[0] if token is not None else None,
+                token.start[1] + 1 if token is not None else None,
+                unit_name if token is not None else None,
+            )
+        non_multiplicative = quantity._get_non_multiplicative_units()
+        if non_multiplicative:
+            unit_name = non_multiplicative[0]
+            raise ExpressionEvaluationError(
+                f"Absolute or offset unit '{unit_name}' is not supported by "
+                "automatic differentiation; use a multiplicative unit",
+                expression,
+                token.start[0] if token is not None else None,
+                token.start[1] + 1 if token is not None else None,
+                unit_name if token is not None else None,
+            )
+
+    def differentiate(
+        self,
+        expression: str,
+        wrt: str,
+        bindings: Mapping[str, QuantityArgument]
+        | Iterable[tuple[str, QuantityArgument]],
+        case_sensitive: bool | None = None,
+    ) -> pint_ad.DifferentiationResult:
+        """First-order forward-mode automatic differentiation of an expression.
+
+        The expression is parsed with the same restricted arithmetic tree as
+        :meth:`parse_expression` (parentheses, unary ``+``/``-``,
+        ``+``/``-``/``*``/``/``, implicit multiplication and constant
+        dimensionless powers). A single tree traversal propagates each
+        subexpression's value and differential via the chain rule, without
+        finite differences, ``eval`` or dynamic code execution.
+
+        Parameters
+        ----------
+        expression
+            Algebraic expression referencing bound symbols and registry units.
+        wrt
+            Name of the bound symbol to differentiate with respect to.
+        bindings
+            Mapping of symbol names to quantities (or an iterable of
+            ``(name, quantity)`` pairs, in which case duplicate names are
+            rejected). All quantities must belong to this registry and use
+            multiplicative units only.
+        case_sensitive
+            Controls case sensitivity of registry unit name resolution, as in
+            :meth:`parse_expression`.
+
+        Returns
+        -------
+        DifferentiationResult
+            ``(value, derivative)`` where ``value`` is the Quantity obtained by
+            evaluating the expression and ``derivative`` carries units
+            equivalent to ``value.units / wrt.units``.
+
+        Raises
+        ------
+        ExpressionEvaluationError
+            For validation failures (unbound or duplicate symbols, unknown
+            symbols, non-multiplicative units, active context, unsupported
+            operators or exponents) and for value-domain errors such as
+            division by zero or a fractional power of a negative value. Domain
+            errors carry the offending expression position; no partially
+            computed result is returned.
+        """
+        bindings = self._normalize_diff_bindings(bindings)
+
+        # Context-dependent conversions are out of scope for the first version.
+        # Presence is checked explicitly: an empty active context has an empty
+        # relation map and would otherwise be falsy.
+        active_ctx = getattr(self, "_active_ctx", None)
+        if active_ctx is not None and active_ctx.contexts:
+            raise ExpressionEvaluationError(
+                "Automatic differentiation within an active unit context is "
+                "not supported; context-dependent conversions are out of scope"
+            )
+
+        if not isinstance(wrt, str) or not wrt:
+            raise ExpressionEvaluationError(
+                "The differentiation variable must be a non-empty symbol name"
+            )
+        if wrt not in bindings:
+            raise ExpressionEvaluationError(
+                f"Differentiation variable '{wrt}' is not bound to any quantity"
+            )
+
+        if not expression or not expression.strip():
+            raise ExpressionEvaluationError("Cannot differentiate an empty expression")
+
+        # Every binding must live in this registry and use multiplicative units.
+        for name, value in bindings.items():
+            if isinstance(value, SharedRegistryObject) and value._REGISTRY is not self:
+                raise ExpressionEvaluationError(
+                    f"Binding '{name}' belongs to a different unit registry"
+                )
+
+        processed = string_preprocessor(self._apply_preprocessors(expression))
+        tree = build_eval_tree(pint_eval.tokenizer(processed))
+
+        # Resolve and validate every leaf before any arithmetic so that unknown
+        # symbols or forbidden units fail before evaluation can start.
+        leaf_duals: dict[int, pint_ad._Dual] = {}
+        wrt_quantity = self.Quantity(bindings[wrt])
+        for token in pint_ad.collect_leaf_tokens(tree):
+            primal = self._resolve_diff_leaf(token, bindings, case_sensitive, processed)
+            self._assert_diff_units_multiplicative(primal, token, processed)
+
+            if token.type == NAME and token.string in bindings:
+                has_variable = True
+                if token.string == wrt:
+                    # Unit seed in the variable's own coordinate units. Every
+                    # occurrence of the same symbol shares this identity.
+                    tangent = self.Quantity(1, primal.units)
+                else:
+                    # A dimensional zero, never a bare float: incompatible
+                    # tangent additions stay visible as DimensionalityError.
+                    tangent = self.Quantity(0, primal.units)
+            else:
+                has_variable = False
+                tangent = self.Quantity(0, primal.units)
+
+            leaf_duals[id(token)] = pint_ad._Dual(primal, tangent, has_variable)
+
+        # Bindings that never appear in the expression still need validation.
+        for value in bindings.values():
+            self._assert_diff_units_multiplicative(
+                self.Quantity(value), None, processed
+            )
+
+        root = pint_ad.evaluate_dual_tree(
+            tree, lambda token: leaf_duals[id(token)], processed
+        )
+
+        # Divide the differential (same units as the value) by the unit seed to
+        # obtain df/dx with units equal to value.units / wrt.units.
+        seed = self.Quantity(1, wrt_quantity.units)
+        derivative = root.tangent / seed
+        return pint_ad.DifferentiationResult(root.value, derivative)
 
     ############
     # Conversion methods (object -> magnitude or unit):

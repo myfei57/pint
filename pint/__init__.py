@@ -20,6 +20,7 @@ from .delegates.formatter._format_helpers import formatter
 from .errors import (  # noqa: F401
     DefinitionSyntaxError,
     DimensionalityError,
+    ExpressionEvaluationError,
     LogarithmicUnitCalculusError,
     OffsetUnitCalculusError,
     PintError,

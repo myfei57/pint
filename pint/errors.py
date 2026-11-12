@@ -145,6 +145,50 @@ class DefinitionSyntaxError(ValueError, PintError):
         return self.__class__, (self.msg,)
 
 
+class ExpressionEvaluationError(PintError):
+    """Raised when an algebraic expression cannot be evaluated or differentiated.
+
+    Domain errors (e.g. division by zero, a fractional power of a negative
+    value) carry the location of the offending token within the expression so
+    that no partially computed result is ever returned. Validation failures
+    detected before evaluation (e.g. an unbound differentiation variable, an
+    unknown symbol, a duplicate binding or a non-multiplicative unit) use
+    ``lineno``/``col`` equal to ``None``.
+    """
+
+    def __init__(
+        self,
+        msg: str,
+        expression: str | None = None,
+        lineno: int | None = None,
+        col: int | None = None,
+        near: str | None = None,
+    ):
+        self.msg = msg
+        self.expression = expression
+        self.lineno = lineno
+        self.col = col
+        self.near = near
+
+    def __str__(self):
+        location = ""
+        if self.lineno is not None and self.col is not None:
+            location = f" at line {self.lineno}, column {self.col}"
+            if self.near is not None:
+                location += f" near '{self.near}'"
+        expression = f" in expression '{self.expression}'" if self.expression else ""
+        return f"{self.msg}{location}{expression}"
+
+    def __reduce__(self):
+        return self.__class__, (
+            self.msg,
+            self.expression,
+            self.lineno,
+            self.col,
+            self.near,
+        )
+
+
 class RedefinitionError(ValueError, PintError):
     """Raised when a unit or prefix is redefined."""
 
