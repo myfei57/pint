@@ -18,10 +18,11 @@ import tokenize
 import types
 from collections import deque
 from collections.abc import Callable, Generator, Hashable, Iterable, Iterator, Mapping
+from decimal import Decimal
 from fractions import Fraction
 from functools import lru_cache, partial
 from logging import NullHandler
-from numbers import Number
+from numbers import Number, Rational
 from token import NAME, NUMBER
 from typing import (
     TYPE_CHECKING,
@@ -229,6 +230,40 @@ def column_echelon_form(
     return _transpose(ech_matrix), _transpose(id_matrix), swapped
 
 
+def _dimensionality_of(value: Any, registry: UnitRegistry | None) -> UnitsContainer:
+    """Return the base dimensionality of a single variable specification.
+
+    ``value`` may be a unit or dimension expression string, a unit
+    container/dict, a :class:`~pint.Unit` or :class:`~pint.Quantity`-like
+    object exposing a ``dimensionality`` attribute, or anything the
+    registry's :meth:`get_dimensionality` understands.
+    """
+
+    if registry is None:
+        getdim = _noop
+        non_int_type = float
+    else:
+        getdim = registry.get_dimensionality
+        non_int_type = registry.non_int_type
+
+    if isinstance(value, str):
+        value = ParserHelper.from_string(value, non_int_type=non_int_type)
+    if isinstance(value, dict):
+        dims = getdim(registry.UnitsContainer(value))
+    elif not hasattr(value, "dimensionality"):
+        dims = getdim(value)
+    else:
+        dims = value.dimensionality
+
+    if registry is None and any(not key.startswith("[") for key in dims):
+        logger.warning(
+            "A non dimension was found and a registry was not provided. "
+            "Assuming that it is a dimension name: {}.".format(dims)
+        )
+
+    return dims
+
+
 def pi_theorem(quantities: dict[str, Any], registry: UnitRegistry | None = None):
     """Builds dimensionless quantities using the Buckingham π theorem
 
@@ -250,29 +285,8 @@ def pi_theorem(quantities: dict[str, Any], registry: UnitRegistry | None = None)
     quant = []
     dimensions = set()
 
-    if registry is None:
-        getdim = _noop
-        non_int_type = float
-    else:
-        getdim = registry.get_dimensionality
-        non_int_type = registry.non_int_type
-
     for name, value in quantities.items():
-        if isinstance(value, str):
-            value = ParserHelper.from_string(value, non_int_type=non_int_type)
-        if isinstance(value, dict):
-            dims = getdim(registry.UnitsContainer(value))
-        elif not hasattr(value, "dimensionality"):
-            dims = getdim(value)
-        else:
-            dims = value.dimensionality
-
-        if not registry and any(not key.startswith("[") for key in dims):
-            logger.warning(
-                "A non dimension was found and a registry was not provided. "
-                "Assuming that it is a dimension name: {}.".format(dims)
-            )
-
+        dims = _dimensionality_of(value, registry)
         quant.append((name, dims))
         dimensions = dimensions.union(dims.keys())
 
@@ -302,6 +316,289 @@ def pi_theorem(quantities: dict[str, Any], registry: UnitRegistry | None = None)
                 if f.numerator != 0
             }
         )
+    return results
+
+
+def _to_fraction(value: Scalar) -> Fraction:
+    """Convert a dimensionality exponent to an exact :class:`Fraction`.
+
+    Floating point exponents are converted through :meth:`Fraction.from_float`
+    so no rounding is introduced by the conversion itself; integer and
+    rational exponents keep their exact value.
+    """
+    if isinstance(value, Fraction):
+        return value
+    if isinstance(value, float):
+        return Fraction.from_float(value)
+    if isinstance(value, Rational):
+        return Fraction(value.numerator, value.denominator)
+    if isinstance(value, Decimal):
+        return Fraction(value)
+    raise TypeError(
+        f"Cannot convert dimensionality exponent {value!r} to a rational number"
+    )
+
+
+def _fraction_rank(matrix: list[list[Fraction]]) -> tuple[int, list[int]]:
+    """Return the rank and pivot column indices of a Fraction matrix.
+
+    Gauss-Jordan elimination with exact arithmetic; the input matrix is not
+    modified.
+    """
+    reduced = [row[:] for row in matrix]
+    if not reduced or not reduced[0]:
+        return 0, []
+    rows, cols = len(reduced), len(reduced[0])
+    pivot_columns: list[int] = []
+    lead = 0
+    for r in range(rows):
+        pivot = None
+        for c in range(lead, cols):
+            for i in range(r, rows):
+                if reduced[i][c] != 0:
+                    pivot = (i, c)
+                    break
+            if pivot is not None:
+                break
+        if pivot is None:
+            break
+        i, c = pivot
+        reduced[r], reduced[i] = reduced[i], reduced[r]
+        pivot_value = reduced[r][c]
+        reduced[r] = [el / pivot_value for el in reduced[r]]
+        for s in range(rows):
+            if s == r:
+                continue
+            factor = reduced[s][c]
+            if factor != 0:
+                reduced[s] = [a - factor * b for a, b in zip(reduced[s], reduced[r])]
+        pivot_columns.append(c)
+        lead = c + 1
+    return len(pivot_columns), pivot_columns
+
+
+def _solve_full_column_rank(
+    matrix: list[list[Fraction]], rhs: list[Fraction]
+) -> list[Fraction] | None:
+    """Solve ``matrix @ x = rhs`` with exact Fraction arithmetic.
+
+    ``matrix`` must have full column rank. The unique solution is returned;
+    ``None`` is returned if the system is inconsistent, i.e. ``rhs`` does not
+    lie in the column space of ``matrix``.
+    """
+    rows = len(matrix)
+    cols = len(matrix[0]) if rows else 0
+    augmented = [matrix[r][:] + [rhs[r]] for r in range(rows)]
+    pivot_columns: list[int] = []
+    rank = 0
+    for c in range(cols):
+        pivot = next((i for i in range(rank, rows) if augmented[i][c] != 0), None)
+        if pivot is None:
+            # Full column rank was verified by the caller, so this is
+            # unreachable in normal operation.
+            return None
+        augmented[rank], augmented[pivot] = augmented[pivot], augmented[rank]
+        pivot_value = augmented[rank][c]
+        augmented[rank] = [el / pivot_value for el in augmented[rank]]
+        for i in range(rows):
+            if i == rank:
+                continue
+            factor = augmented[i][c]
+            if factor != 0:
+                augmented[i] = [
+                    a - factor * b for a, b in zip(augmented[i], augmented[rank])
+                ]
+        pivot_columns.append(c)
+        rank += 1
+
+    # Rows without a pivot must vanish completely for the system to be
+    # consistent.
+    if any(augmented[i][cols] != 0 for i in range(rank, rows)):
+        return None
+
+    solution = [Fraction(0)] * cols
+    for r, c in enumerate(pivot_columns):
+        solution[c] = augmented[r][cols]
+    return solution
+
+
+def pi_theorem_repeating(
+    quantities: Mapping[str, Any],
+    repeating_variables: Iterable[str],
+    registry: UnitRegistry | None = None,
+) -> list[dict[str, Fraction]]:
+    """Build dimensionless products with user-specified repeating variables.
+
+    Unlike :func:`pi_theorem`, which returns an arbitrary basis of the null
+    space of the dimensionality matrix, this entry point constructs one
+    dimensionless product per non-repeating variable. In each product the
+    exponent of that variable is fixed to ``1``, the exponents of every other
+    non-repeating variable are ``0`` and only the exponents of the repeating
+    variables are solved for. All exponents are returned as exact
+    :class:`~fractions.Fraction` instances.
+
+    The dimensionality matrix is built with exact :class:`Fraction`
+    arithmetic. The repeating variable columns must be linearly independent
+    (no dimensionless repeating variable, no dependent pair) and span the
+    dimensionality of every input variable.
+
+    Parameters
+    ----------
+    quantities
+        Ordered mapping between variable name and a unit, dimension
+        expression, :class:`~pint.Unit`, :class:`~pint.Quantity` or
+        dimensionality. The declaration order is preserved in the output.
+    repeating_variables
+        Ordered names of the repeating variables. Every name must exist in
+        ``quantities``.
+    registry
+        Registry used to resolve units and dimensions.
+        (default value = None)
+
+    Returns
+    -------
+    list[dict[str, Fraction]]
+        One dimensionless product per non-repeating variable, in declaration
+        order. Each dict maps variable names to rational exponents; zero
+        exponents are omitted. An already-dimensionless non-repeating
+        variable is returned on its own, with exponent ``1``.
+
+    Raises
+    ------
+    ValueError
+        If a repeating variable name is unknown or duplicated, a repeating
+        variable is dimensionless, the repeating columns are linearly
+        dependent, or they do not span all input dimensions (including when
+        there are too few repeating variables).
+    """
+
+    names = list(quantities)
+    repeating = list(repeating_variables)
+
+    missing = [name for name in repeating if name not in quantities]
+    if missing:
+        raise ValueError(
+            "Unknown repeating variable(s) not present among the input "
+            "variables: {}.".format(", ".join(repr(name) for name in missing))
+        )
+
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for name in repeating:
+        if name in seen and name not in duplicates:
+            duplicates.append(name)
+        seen.add(name)
+    if duplicates:
+        raise ValueError(
+            "Repeating variables must be distinct, but the following are "
+            "listed more than once: {}.".format(
+                ", ".join(repr(name) for name in duplicates)
+            )
+        )
+
+    dimensionalities = {
+        name: _dimensionality_of(value, registry) for name, value in quantities.items()
+    }
+
+    # A stable row order keeps results independent of set iteration order.
+    base_dimensions = sorted(
+        {dimension for dims in dimensionalities.values() for dimension in dims}
+    )
+    column_index = {name: j for j, name in enumerate(names)}
+
+    # Dimensionality matrix: rows are base dimensions, columns are variables.
+    # Missing exponents are treated as zero.
+    matrix = [
+        [_to_fraction(dimensionalities[name].get(dimension, 0)) for name in names]
+        for dimension in base_dimensions
+    ]
+
+    repeating_indices = [column_index[name] for name in repeating]
+    repeating_matrix = [[row[j] for j in repeating_indices] for row in matrix]
+
+    # A zero (dimensionless) repeating column can never be part of a basis of
+    # the dimensionality space.
+    dimensionless_repeating = [
+        name
+        for name, j in zip(repeating, repeating_indices)
+        if all(row[j] == 0 for row in matrix)
+    ]
+    if dimensionless_repeating:
+        raise ValueError(
+            "Repeating variables must carry a dimension, but the following "
+            "are dimensionless: {}.".format(
+                ", ".join(repr(name) for name in dimensionless_repeating)
+            )
+        )
+
+    rank_repeating, pivot_columns = _fraction_rank(repeating_matrix)
+    if rank_repeating != len(repeating):
+        dependent = [name for k, name in enumerate(repeating) if k not in pivot_columns]
+        raise ValueError(
+            "The repeating variable columns are not linearly independent; "
+            "the following variable(s) add no independent dimension: {}.".format(
+                ", ".join(repr(name) for name in dependent)
+            )
+        )
+
+    rank_full, _ = _fraction_rank(matrix)
+    non_repeating = [name for name in names if name not in seen]
+
+    if rank_full > rank_repeating:
+        uncovered: list[str] = []
+        uncovered_dimensions: set[str] = set()
+        for name in non_repeating:
+            j = column_index[name]
+            column = [row[j] for row in matrix]
+            if _solve_full_column_rank(repeating_matrix, column) is None:
+                uncovered.append(name)
+                for i, dimension in enumerate(base_dimensions):
+                    if column[i] != 0 and all(
+                        repeating_matrix[i][k] == 0 for k in range(len(repeating))
+                    ):
+                        uncovered_dimensions.add(dimension)
+        raise ValueError(
+            "The {} repeating variable(s) span only {} of the {} independent "
+            "input dimension(s); at least {} repeating variable(s) are "
+            "required. Variable(s) outside the repeating span: {}. "
+            "Uncovered base dimension(s): {}.".format(
+                len(repeating),
+                rank_repeating,
+                rank_full,
+                rank_full,
+                ", ".join(repr(name) for name in uncovered) or "<none>",
+                ", ".join(sorted(uncovered_dimensions)) or "<none>",
+            )
+        )
+
+    results: list[dict[str, Fraction]] = []
+    for name in non_repeating:
+        j = column_index[name]
+        column = [row[j] for row in matrix]
+
+        # An already-dimensionless variable is a dimensionless product of
+        # itself with no contribution from the repeating variables.
+        if not any(exponent != 0 for exponent in column):
+            results.append({name: Fraction(1)})
+            continue
+
+        # Solve R @ x = -column so that column + R @ x = 0, i.e. the product
+        # is dimensionless. The fixed exponent of ``name`` stays 1.
+        exponents = _solve_full_column_rank(
+            repeating_matrix, [-exponent for exponent in column]
+        )
+        if exponents is None:  # pragma: no cover - guaranteed by the span check
+            raise ValueError(
+                "No dimensionless product could be built for variable "
+                "{!r} with the given repeating variables.".format(name)
+            )
+
+        group: dict[str, Fraction] = {name: Fraction(1)}
+        for repeating_name, exponent in zip(repeating, exponents):
+            if exponent != 0:
+                group[repeating_name] = exponent
+        results.append(group)
+
     return results
 
 

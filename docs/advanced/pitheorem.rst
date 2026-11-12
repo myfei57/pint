@@ -110,5 +110,58 @@ What is the pressure loss `p` in a pipe with length `L` and diameter `D` for a f
 
 The second dimensionless quantity is the `Reynolds Number`_
 
+
+Specifying the repeating variables
+-----------------------------------
+
+:func:`pi_theorem` returns an arbitrary basis of the null space of the
+dimensionality matrix: the choice of which variables carry exponent ``1`` in
+each dimensionless product depends on the elimination order. When you need a
+specific convention, use :func:`pi_theorem_repeating` (also available as
+:meth:`~pint.UnitRegistry.pi_theorem_repeating`) and name the repeating
+variables explicitly.
+
+One dimensionless product is built for every non-repeating variable. In each
+product the exponent of that variable is fixed to ``1``, the exponents of the
+other non-repeating variables are ``0``, and only the rational exponents of the
+repeating variables are solved for using exact :class:`fractions.Fraction`
+arithmetic:
+
+.. doctest::
+
+    >>> ureg.pi_theorem_repeating(
+    ...     {"rho": "kg/m**3", "v": "m/s", "L": "m", "p": "Pa", "mu": "poise"},
+    ...     ["rho", "v", "L"],
+    ... )
+    [{'p': Fraction(1, 1), 'rho': Fraction(-1, 1), 'v': Fraction(-2, 1)}, {'mu': Fraction(1, 1), 'rho': Fraction(-1, 1), 'v': Fraction(-1, 1), 'L': Fraction(-1, 1)}]
+
+The first product is the Euler number :math:`\Pi_p = p / (\rho v^2)` (the zero
+exponent of ``L`` is omitted) and the second is the inverse Reynolds number
+:math:`\Pi_\mu = \mu / (\rho v L)`. Results follow the declaration order of the
+non-repeating variables; reordering the inputs never changes the exponents
+attached to a given variable. An already-dimensionless variable is returned on
+its own:
+
+.. doctest::
+
+    >>> ureg.pi_theorem_repeating(
+    ...     {"rho": "kg/m**3", "v": "m/s", "L": "m", "theta": "degree"},
+    ...     ["rho", "v", "L"],
+    ... )
+    [{'theta': Fraction(1, 1)}]
+
+The repeating variable columns must be linearly independent and span the
+dimensionality of every input variable. Unknown names, dimensionless or
+dependent repeating variables and repeating sets that leave a base dimension
+uncovered raise a :class:`ValueError` that names the offending variables and
+dimensions instead of silently returning an incomplete set of products:
+
+.. doctest::
+
+    >>> ureg.pi_theorem_repeating({"a": "m", "b": "kg"}, ["a"])
+    Traceback (most recent call last):
+    ...
+    ValueError: The 1 repeating variable(s) span only 1 of the 2 independent input dimension(s); at least 2 repeating variable(s) are required. Variable(s) outside the repeating span: 'b'. Uncovered base dimension(s): [mass].
+
 .. _`Buckingham π theorem`: http://en.wikipedia.org/wiki/Buckingham_%CF%80_theorem
 .. _`Reynolds Number`: http://en.wikipedia.org/wiki/Reynolds_number

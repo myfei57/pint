@@ -32,7 +32,7 @@ from typing import (
 from typing_extensions import TypeVar
 
 from . import facets, registry_helpers
-from .util import logger, pi_theorem
+from .util import logger, pi_theorem, pi_theorem_repeating
 
 if TYPE_CHECKING:
     import datetime
@@ -608,6 +608,36 @@ class UnitRegistry(
 
         """
         return pi_theorem(quantities, self)
+
+    def pi_theorem_repeating(
+        self, quantities: dict, repeating_variables: Iterable[str]
+    ) -> list[dict]:
+        """Build dimensionless products using the Buckingham π theorem with
+        user-specified repeating variables.
+
+        One dimensionless product is returned for each non-repeating
+        variable, with that variable's exponent fixed to ``1``. Only the
+        rational exponents of the repeating variables are solved for.
+
+        Parameters
+        ----------
+        quantities
+            ordered mapping between variable name and units, dimensions,
+            units or quantities.
+        repeating_variables
+            ordered names of the repeating variables; their dimensionality
+            columns must be linearly independent and span all input
+            dimensions.
+
+        Returns
+        -------
+        list[dict]
+            a list of dimensionless products expressed as dicts of exact
+            rational exponents, one per non-repeating variable in
+            declaration order.
+
+        """
+        return pi_theorem_repeating(quantities, repeating_variables, self)
 
     def setup_matplotlib(self, enable: bool = True) -> None:
         """Set up handlers for matplotlib's unit support.

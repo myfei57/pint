@@ -29,7 +29,7 @@ from .errors import (  # noqa: F401
 )
 from .formatting import register_unit_format
 from .registry import ApplicationRegistry, LazyRegistry, UnitRegistry
-from .util import logger, pi_theorem  # noqa: F401
+from .util import logger, pi_theorem, pi_theorem_repeating  # noqa: F401
 
 # Default Quantity, Unit and Measurement are the ones
 # build in the default registry.
@@ -148,6 +148,7 @@ __all__ = (
     "set_application_registry",
     "register_unit_format",
     "pi_theorem",
+    "pi_theorem_repeating",
     "__version__",
     "Context",
 )
