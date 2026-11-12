@@ -4,6 +4,7 @@ Pint Changelog
 0.26.3 (unreleased)
 -------------------
 
+- Add `pint.solve_dimensionalities`, an exact rational symbolic solver that infers the base-dimension exponents of unknown symbols from labelled algebraic equations with a restricted, eval-free grammar; it reports a unique solution, a particular solution with null-space basis for under-determined systems, or conflicting equation labels
 - Deprecate `pint.util.matrix_to_string`, which is unused (#2547)
 - Fix parsing `.` as multiplication between units, e.g. `J/(kg.K)` (#2543)
 - Load definitions from TOML files; `pint/default_en.toml` holds the default definitions (#2526)

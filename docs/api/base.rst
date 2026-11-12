@@ -67,4 +67,7 @@ Other functions
 .. autofunction:: formatter
 .. autofunction:: register_unit_format
 .. autofunction:: pi_theorem
+.. autofunction:: solve_dimensionalities
+.. autoclass:: DimensionalitySolution
+    :members:
 .. autoclass:: Context

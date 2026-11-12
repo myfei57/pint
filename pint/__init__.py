@@ -17,6 +17,10 @@ from importlib.metadata import version
 from typing import TYPE_CHECKING, TypeAlias
 
 from .delegates.formatter._format_helpers import formatter
+from .dimensionality import (  # noqa: F401
+    DimensionalitySolution,
+    solve_dimensionalities,
+)
 from .errors import (  # noqa: F401
     DefinitionSyntaxError,
     DimensionalityError,
@@ -148,6 +152,8 @@ __all__ = (
     "set_application_registry",
     "register_unit_format",
     "pi_theorem",
+    "solve_dimensionalities",
+    "DimensionalitySolution",
     "__version__",
     "Context",
 )
