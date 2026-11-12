@@ -28,6 +28,8 @@ from .errors import (  # noqa: F401
     UnitStrippedWarning,
 )
 from .formatting import register_unit_format
+from .polynomial import MAX_DEGREE as MAX_POLYNOMIAL_DEGREE
+from .polynomial import PolynomialFitError, QuantityPolynomial
 from .registry import ApplicationRegistry, LazyRegistry, UnitRegistry
 from .util import logger, pi_theorem  # noqa: F401
 
@@ -140,9 +142,12 @@ __all__ = (
     "LogarithmicUnitCalculusError",
     "DimensionalityError",
     "OffsetUnitCalculusError",
+    "PolynomialFitError",
     "RedefinitionError",
     "UndefinedUnitError",
     "UnitStrippedWarning",
+    "QuantityPolynomial",
+    "MAX_POLYNOMIAL_DEGREE",
     "formatter",
     "get_application_registry",
     "set_application_registry",

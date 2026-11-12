@@ -29,6 +29,9 @@ to dig deeper into Pint or develop Pint.
 .. automodule:: pint.pint_eval
     :members:
 
+.. automodule:: pint.polynomial
+    :members:
+
 .. automodule:: pint.registry
     :members:
     :exclude-members: Quantity, Unit, Measurement, Group, Context, System, UnitRegistry
